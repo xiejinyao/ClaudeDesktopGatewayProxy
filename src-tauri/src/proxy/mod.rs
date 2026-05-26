@@ -23,6 +23,7 @@ pub struct ProxyServer {
     shutdown_tx: Arc<Mutex<Option<watch::Sender<()>>>>,
     running: Arc<Mutex<bool>>,
     is_tls: bool,
+    start_error: Arc<Mutex<Option<String>>>,
 }
 
 impl ProxyServer {
@@ -45,6 +46,8 @@ impl ProxyServer {
         let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
         let running = Arc::new(Mutex::new(true));
         let running_clone = running.clone();
+        let start_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let start_error_clone = start_error.clone();
 
         // Build TLS acceptor if enabled
         let tls_acceptor = if is_tls {
@@ -86,8 +89,10 @@ impl ProxyServer {
                 let listener = match TcpListener::bind(addr).await {
                     Ok(l) => l,
                     Err(e) => {
-                        log::error!("[{}] 代理启动失败: {}", group_name, e);
+                        let msg = format!("代理启动失败: {} — 端口可能被占用", e);
+                        log::error!("[{}] {}", group_name, msg);
                         *running_clone.lock() = false;
+                        *start_error_clone.lock() = Some(msg);
                         return;
                     }
                 };
@@ -106,6 +111,7 @@ impl ProxyServer {
             shutdown_tx,
             running,
             is_tls,
+            start_error,
         }
     }
 
@@ -122,6 +128,11 @@ impl ProxyServer {
     /// Check if the proxy server is running
     pub fn is_running(&self) -> bool {
         *self.running.lock()
+    }
+
+    /// Get the startup error message, if any
+    pub fn start_error(&self) -> Option<String> {
+        self.start_error.lock().clone()
     }
 
     /// Stop the proxy server

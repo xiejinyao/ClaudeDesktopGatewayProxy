@@ -438,7 +438,14 @@ pub fn toggle_group_proxy(
     let srv = crate::proxy::ProxyServer::new(proxy_cfg, log_level);
     let addr = srv.listen_addr().to_string();
     let is_tls = srv.is_tls();
-    proxies.insert(group_id, srv);
+
+    if !srv.is_running() {
+        let err = srv.start_error().unwrap_or_else(|| "未知错误".to_string());
+        add_log(&state.logs, &format!("❌ [{}] {}", group.name, err));
+        return Err(err);
+    }
+
+    proxies.insert(group_id.clone(), srv);
     let scheme = proxy_url_scheme(is_tls);
     add_log(&state.logs, &format!("🚀 [{}] 代理启动于 {}", group.name, addr));
     add_log(

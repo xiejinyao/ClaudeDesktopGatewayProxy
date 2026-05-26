@@ -142,6 +142,14 @@ pub fn start_proxies_for_all(
         let srv = ProxyServer::new(proxy_cfg, log_level.clone());
         let addr = srv.listen_addr().to_string();
         let is_tls = srv.is_tls();
+
+        // Check if proxy started successfully
+        if !srv.is_running() {
+            let err = srv.start_error().unwrap_or_else(|| "未知错误".to_string());
+            add_log(logs, &format!("❌ [{}] {}", group.name, err));
+            continue; // Don't add to map — won't try again until next start
+        }
+
         proxies_lock.insert(group.id.clone(), srv);
 
         let scheme = if is_tls { "https" } else { "http" };
