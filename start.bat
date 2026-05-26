@@ -1,208 +1,254 @@
 @echo off
 REM ============================================================
-REM AI Gateway Proxy - ÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩ≈±ÔøΩ (Windows)
+REM AI Gateway Proxy - ±‡“Î¥Ú∞¸Ω≈±æ (Windows)
+REM Tauri v2 ◊¿√Ê”¶”√
 REM ============================================================
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
-set VITE_PORT=1420
-set PROXY_PORT=8082
-set VITE_USE_PORT=%VITE_PORT%
-set PROXY_USE_PORT=%PROXY_PORT%
+REM ---------- —’…´∂®“Â£®Windows 10+ ÷ß≥÷ ANSI£©----------
+set "GREEN=[92m"
+set "YELLOW=[93m"
+set "RED=[91m"
+set "NC=[0m"
 
-REM ---------- ÔøΩÔøΩÔøΩﬂ∫ÔøΩÔøΩÔøΩ ----------
+REM ---------- Step 0: ª∑æ≥ºÏ≤È ----------
+echo [INFO] ºÏ≤È±‡“Îª∑æ≥...
 
-REM ÔøΩÔøΩÔøΩÀøÔøΩÔøΩ«∑ÔøΩ’ºÔøΩÔøΩ
-REM ÔøΩ√∑ÔøΩ: call :port_in_use PORT RESULT_VAR
-REM ÔøΩÔøΩÔøΩ: 0=’ºÔøΩÔøΩ, 1=ÔøΩÔøΩÔøΩÔøΩ
-:port_in_use_impl
-setlocal
-set P=%1
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%P% " ^| findstr "LISTENING" 2^>nul') do (
-    endlocal
-    set %2=1
-    exit /b 0
-)
-endlocal
-set %2=0
-exit /b 0
-
-REM ÔøΩÔøΩ»°ÔøΩÀøÔøΩ’ºÔøΩ√µÔøΩ PID ÔøΩÕΩÔøΩÔøΩÔøΩÔøΩÔøΩ
-REM ÔøΩ√∑ÔøΩ: call :port_info PORT
-:port_info_impl
-setlocal
-set P=%1
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%P% " ^| findstr "LISTENING" 2^>nul') do (
-    set PID=%%a
-    for /f "tokens=1" %%b in ('tasklist /FI "PID eq !PID!" /FO CSV /NH 2^>nul') do (
-        endlocal
-        echo PID=!PID! Name=%%~b
-        exit /b 0
-    )
-)
-endlocal
-exit /b 0
-
-REM ÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩ“ªÔøΩÔøΩÔøΩÔøΩÔøΩ–∂ÀøÔøΩ
-REM ÔøΩ√∑ÔøΩ: call :find_free_port START_PORT RESULT_VAR
-:find_free_port_impl
-setlocal
-set /a P=%1
-set /a MAX=P+20
-
-:find_loop
-if !P! geq !MAX! (
-    endlocal
-    set %2=
-    exit /b 1
-)
-
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":!P! " ^| findstr "LISTENING" 2^>nul') do (
-    set /a P+=1
-    goto :find_loop
-)
-
-endlocal
-set %2=%P%
-exit /b 0
-
-REM ---------- ÔøΩÔøΩÔøΩ bun ----------
-where bun >nul 2>&1
+where node >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [ERROR] bun not found. Install it first: https://bun.sh
+    echo [ERROR] »±…Ÿ√¸¡Ó: node£¨«Îœ»∞≤◊∞ Node.js
     exit /b 1
 )
+for /f "tokens=*" %%i in ('node --version') do echo [INFO]   [OK] node (%%i)
 
-REM ---------- ÔøΩÀø⁄≥ÔøΩÕªÔøΩÔøΩÔøΩ ----------
-
-REM ÔøΩÔøΩÔøΩ Vite ÔøΩÀøÔøΩ
-call :check_single_port "Vite ÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩ" %VITE_PORT% VITE_USE_PORT
-if "!VITE_USE_PORT!"=="" exit /b 0
-
-REM ÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÀøÔøΩ
-call :check_single_port "ÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩÔøΩ" %PROXY_PORT% PROXY_USE_PORT
-if "!PROXY_USE_PORT!"=="" exit /b 0
-
-REM ---------- ÔøΩÔøΩÔøΩÔøΩ ----------
-echo.
-echo [INFO] Installing dependencies...
-call bun install --silent
-
-echo.
-echo [INFO] Starting Tauri dev mode...
-
-if not "!VITE_USE_PORT!"=="%VITE_PORT%" (
-    echo [INFO] Vite using port: !VITE_USE_PORT! (original %VITE_PORT% in use)
-    set VITE_PORT=!VITE_USE_PORT!
+where npm >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] »±…Ÿ√¸¡Ó: npm£¨«Îœ»∞≤◊∞ Node.js
+    exit /b 1
 )
+for /f "tokens=*" %%i in ('npm --version') do echo [INFO]   [OK] npm (%%i)
 
-if not "!PROXY_USE_PORT!"=="%PROXY_PORT%" (
-    echo [INFO] Proxy using port: !PROXY_USE_PORT! (original %PROXY_PORT% in use)
+where rustc >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] »±…Ÿ√¸¡Ó: rustc£¨«Îœ»∞≤◊∞ Rust: https://rustup.rs/
+    exit /b 1
 )
+for /f "tokens=*" %%i in ('rustc --version') do echo [INFO]   [OK] rustc (%%i)
 
-echo.
-call bun run tauri dev
-goto :eof
-
-REM ==================== ÔøΩÀø⁄≥ÔøΩÕªÔøΩÔøΩÔøΩÔøΩ ====================
-
-:check_single_port
-setlocal
-set LABEL=%~1
-set PORT=%~2
-
-REM ÔøΩÔøΩÔøΩÀøÔøΩÔøΩ«∑ÔøΩÔøΩÔøΩÔøΩÔøΩ
-set IN_USE=0
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%PORT% " ^| findstr "LISTENING" 2^>nul') do (
-    set IN_USE=1
-    set OCC_PID=%%a
-    for /f "tokens=1" %%b in ('tasklist /FI "PID eq !OCC_PID!" /FO CSV /NH 2^>nul') do (
-        set OCC_NAME=%%~b
-    )
+where cargo >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] »±…Ÿ√¸¡Ó: cargo£¨«Îœ»∞≤◊∞ Rust
+    exit /b 1
 )
+for /f "tokens=*" %%i in ('cargo --version') do echo [INFO]   [OK] cargo (%%i)
 
-if !IN_USE!==0 (
-    endlocal
-    set %3=%PORT%
-    exit /b 0
-)
-
-REM ÔøΩÔøΩÔøΩ“ΩÔøΩÔøΩÔøΩÀøÔøΩ
-set /a NEXT=PORT+1
-set SUGGESTED=
-for /l %%p in (!NEXT!,1,!NEXT!+19) do (
-    set FOUND=1
-    for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%%p " ^| findstr "LISTENING" 2^>nul') do set FOUND=0
-    if !FOUND!==1 (
-        set SUGGESTED=%%p
-        goto :found_suggested
-    )
-)
-:found_suggested
-
-echo.
-echo [WARN] Port %PORT% is in use ^(%LABEL%^)
-echo          Process: !OCC_NAME! (PID: !OCC_PID!)
-
-if not "!SUGGESTED!"=="" (
-    echo.
-    echo   Options:
-    echo     u^) Use suggested port !SUGGESTED!
-    echo     k^) Kill occupying process and use port %PORT%
-    echo     i^) Ignore and continue anyway (may fail^)
-    echo     q^) Quit
-    echo.
-    set /p CHOICE="[?] Enter choice [u/k/i/q]: "
-
-    if /i "!CHOICE!"=="u" (
-        endlocal
-        set %3=%SUGGESTED%
-        echo [INFO] Using port %SUGGESTED% instead of %PORT% (%LABEL%)
-        exit /b 0
-    )
-    if /i "!CHOICE!"=="k" (
-        taskkill /PID !OCC_PID! /F >nul 2>&1
-        timeout /t 1 /nobreak >nul
-        echo [INFO] Process terminated.
-        endlocal
-        set %3=%PORT%
-        exit /b 0
-    )
-    if /i "!CHOICE!"=="i" (
-        echo [WARN] Ignoring conflict...
-        endlocal
-        set %3=%PORT%
-        exit /b 0
-    )
-    echo [INFO] Startup cancelled.
-    endlocal
-    set %3=
-    exit /b 0
+REM ºÏ≤È Visual Studio Build Tools£®Windows ±‡“Î–Ë“™£©
+where cl >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [WARN] Œ¥ºÏ≤‚µΩ MSVC ±‡“Î∆˜£¨«Î»∑±£“—∞≤◊∞ Visual Studio Build Tools
+    echo [WARN] œ¬‘ÿµÿ÷∑: https://visualstudio.microsoft.com/visual-cpp-build-tools/
 ) else (
-    echo   No free ports found nearby (scanned +20^).
-    echo.
-    echo   Options:
-    echo     k^) Kill occupying process
-    echo     i^) Ignore and continue anyway (may fail^)
-    echo     q^) Quit
-    echo.
-    set /p CHOICE="[?] Enter choice [k/i/q]: "
-
-    if /i "!CHOICE!"=="k" (
-        taskkill /PID !OCC_PID! /F >nul 2>&1
-        timeout /t 1 /nobreak >nul
-        echo [INFO] Process terminated.
-        endlocal
-        set %3=%PORT%
-        exit /b 0
-    )
-    if /i "!CHOICE!"=="i" (
-        endlocal
-        set %3=%PORT%
-        exit /b 0
-    )
-    echo [INFO] Startup cancelled.
-    endlocal
-    set %3=
-    exit /b 0
+    echo [INFO]   [OK] MSVC Compiler
 )
+
+REM ---------- —°‘Ò◊ÓøÏµƒ∞¸π‹¿Ì∆˜ ----------
+REM ”≈œ»º∂: bun > pnpm > yarn > npm
+set "PKG_MGR="
+
+where bun >nul 2>&1
+if %errorlevel% equ 0 (
+    set "PKG_MGR=bun"
+    goto :pkg_selected
+)
+
+where pnpm >nul 2>&1
+if %errorlevel% equ 0 (
+    set "PKG_MGR=pnpm"
+    goto :pkg_selected
+)
+
+where yarn >nul 2>&1
+if %errorlevel% equ 0 (
+    set "PKG_MGR=yarn"
+    goto :pkg_selected
+)
+
+where npm >nul 2>&1
+if %errorlevel% equ 0 (
+    echo [WARN] Œ¥ºÏ≤‚µΩ bun/pnpm/yarn£¨Ω´ π”√ npm
+    set "PKG_MGR=npm"
+    goto :pkg_selected
+)
+
+echo [ERROR] Œ¥’“µΩ»Œ∫Œ∞¸π‹¿Ì∆˜ (npm/bun/pnpm/yarn)
+exit /b 1
+
+:pkg_selected
+echo [INFO]  π”√∞¸π‹¿Ì∆˜: !PKG_MGR!
+
+REM ---------- Step 1: ∞≤◊∞«∞∂À“¿¿µ ----------
+set "TAOBAO=https://registry.npmmirror.com"
+set "OFFICIAL=https://registry.npmjs.org"
+
+echo [INFO] ∞≤◊∞«∞∂À“¿¿µ (!PKG_MGR! + Ã‘±¶‘¥)...
+
+if "!PKG_MGR!"=="bun" (
+    bun install --registry "!TAOBAO!"
+) else if "!PKG_MGR!"=="pnpm" (
+    pnpm install --registry "!TAOBAO!"
+) else if "!PKG_MGR!"=="yarn" (
+    REM yarn ≤ª÷ß≥÷÷±Ω”÷∏∂® registry£¨¥¥Ω®¡Ÿ ±≈‰÷√
+    if exist .yarnrc copy .yarnrc .yarnrc.bak >nul
+    echo registry "!TAOBAO!" > .yarnrc
+    yarn install
+    if exist .yarnrc.bak (
+        move /Y .yarnrc.bak .yarnrc >nul
+    ) else (
+        del .yarnrc >nul 2>&1
+    )
+) else if "!PKG_MGR!"=="npm" (
+    npm install --registry="!TAOBAO!"
+)
+
+if %errorlevel% neq 0 (
+    echo [WARN] Ã‘±¶‘¥ ß∞‹£¨ªÿÕÀµΩ npm πŸ∑Ω‘¥...
+    if "!PKG_MGR!"=="bun" (
+        bun install --registry "!OFFICIAL!"
+    ) else if "!PKG_MGR!"=="pnpm" (
+        pnpm install --registry "!OFFICIAL!"
+    ) else if "!PKG_MGR!"=="yarn" (
+        if exist .yarnrc copy .yarnrc .yarnrc.bak >nul
+        echo registry "!OFFICIAL!" > .yarnrc
+        yarn install
+        if exist .yarnrc.bak (
+            move /Y .yarnrc.bak .yarnrc >nul
+        ) else (
+            del .yarnrc >nul 2>&1
+        )
+    ) else if "!PKG_MGR!"=="npm" (
+        npm install --registry="!OFFICIAL!"
+    )
+
+    if %errorlevel% neq 0 (
+        echo [ERROR] “¿¿µ∞≤◊∞ ß∞‹
+        exit /b 1
+    )
+)
+
+echo [INFO] “¿¿µ∞≤◊∞≥…π¶
+
+REM ---------- Step 2: …˙≥…”¶”√Õº±Í ----------
+set "ICON_DIR=src-tauri\icons"
+set "ICON_FILE=!ICON_DIR!\icon.png"
+
+if not exist "!ICON_FILE!" (
+    echo [INFO] …˙≥…”¶”√Õº±Í...
+    if not exist "!ICON_DIR!" mkdir "!ICON_DIR!"
+    python gen_icon.py
+    if %errorlevel% neq 0 (
+        echo [WARN] Õº±Í…˙≥… ß∞‹£¨«Î ÷∂Ø∑≈÷√ icon.png µΩ !ICON_DIR!
+    )
+) else (
+    echo [INFO] Õº±Í“—¥Ê‘⁄£¨Ã¯π˝…˙≥…
+)
+
+REM ---------- Step 3: TypeScript ¿‡–ÕºÏ≤È ----------
+echo [INFO] TypeScript ¿‡–ÕºÏ≤È...
+call npx tsc --noEmit 2>nul
+set TSC_EXIT=%errorlevel%
+if %TSC_EXIT% neq 0 (
+    echo [WARN] TypeScript ¿‡–ÕºÏ≤È∑¢œ÷¥ÌŒÛ (ÕÀ≥ˆ¬Î: %TSC_EXIT%)
+    echo [WARN] ºÃ–¯÷¥––ππΩ®£®∫ˆ¬‘¿‡–Õ¥ÌŒÛ£©...
+    REM »Áπ˚œ£Õ˚—œ∏ÒºÏ≤È£¨»°œ˚œ¬√Êµƒ◊¢ Õ
+    REM exit /b 1
+)
+
+REM ---------- Step 4: Tauri ±‡“Î¥Ú∞¸ ----------
+echo [INFO] ø™ º Tauri ±‡“Î¥Ú∞¸ (vite build + cargo build --release)...
+
+REM …Ë÷√ª∑æ≥±‰¡ø“‘Ω‚æˆ SSL Œ Ã‚
+set CARGO_HTTP_CHECK_REVOKE=false
+set RUST_BACKTRACE=1
+set CARGO_NET_GIT_FETCH_WITH_CLI=true
+set CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
+
+echo [INFO] «Â¿Ì Cargo ª∫¥Ê...
+cd src-tauri
+call cargo clean -p aws-lc-rs 2>nul
+call cargo clean -p rustls-pemfile 2>nul
+cd ..
+
+if "!PKG_MGR!"=="bun" (
+    bun run tauri build
+) else if "!PKG_MGR!"=="pnpm" (
+    pnpm tauri build
+) else if "!PKG_MGR!"=="yarn" (
+    yarn tauri build
+) else if "!PKG_MGR!"=="npm" (
+    npm run tauri build
+)
+
+if %errorlevel% neq 0 (
+    echo [WARN] Tauri ±‡“Î¥Ú∞¸ ß∞‹£¨≥¢ ‘ π”√πŸ∑Ω Rust ‘¥...
+
+    REM ±∏∑›µ±«∞≈‰÷√
+    if exist src-tauri\.cargo\config.toml (
+        copy src-tauri\.cargo\config.toml src-tauri\.cargo\config.toml.bak >nul
+    )
+
+    REM ¥¥Ω® π”√πŸ∑Ω‘¥µƒ≈‰÷√
+    if not exist src-tauri\.cargo mkdir src-tauri\.cargo
+    echo [source.crates-io] > src-tauri\.cargo\config.toml
+    echo replace-with = 'official' >> src-tauri\.cargo\config.toml
+    echo. >> src-tauri\.cargo\config.toml
+    echo [source.official] >> src-tauri\.cargo\config.toml
+    echo registry = "https://index.crates.io" >> src-tauri\.cargo\config.toml
+
+    REM «Â¿Ì ß∞‹µƒª∫¥Ê
+    cd src-tauri
+    call cargo clean -p aws-lc-rs 2>nul
+    cd ..
+
+    echo [INFO] ÷ÿ–¬≥¢ ‘±‡“Î£® π”√πŸ∑Ω‘¥£©...
+    if "!PKG_MGR!"=="bun" (
+        bun run tauri build
+    ) else if "!PKG_MGR!"=="pnpm" (
+        pnpm tauri build
+    ) else if "!PKG_MGR!"=="yarn" (
+        yarn tauri build
+    ) else if "!PKG_MGR!"=="npm" (
+        npm run tauri build
+    )
+
+    REM ª÷∏¥‘≠≈‰÷√
+    if exist src-tauri\.cargo\config.toml.bak (
+        move /Y src-tauri\.cargo\config.toml.bak src-tauri\.cargo\config.toml >nul
+    )
+
+    if %errorlevel% neq 0 (
+        echo [ERROR] Tauri ±‡“Î¥Ú∞¸ ß∞‹
+        echo [ERROR] «ÎºÏ≤ÈÕ¯¬Á¡¨Ω”ªÚ ÷∂Ø≈‰÷√¥˙¿Ì
+        exit /b 1
+    )
+)
+
+REM ---------- ÕÍ≥… ----------
+echo [INFO] ============================================
+echo [INFO] ±‡“Î¥Ú∞¸ÕÍ≥…£°
+echo [INFO] ≤˙ŒÔŒª÷√: src-tauri\target\release\bundle\
+echo [INFO] ============================================
+
+set "BUNDLE_DIR=src-tauri\target\release\bundle"
+if exist "!BUNDLE_DIR!" (
+    echo.
+    echo [INFO] ¥Ú∞¸≤˙ŒÔ:
+    for /r "!BUNDLE_DIR!" %%f in (*.msi *.exe *.appx) do (
+        for %%A in ("%%f") do set SIZE=%%~zA
+        set /a SIZE_MB=!SIZE!/1048576
+        echo   %%f ^(!SIZE_MB! MB^)
+    )
+)
+
+endlocal
+exit /b 0
