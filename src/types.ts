@@ -11,7 +11,6 @@ export interface PathReplace {
 export interface PathTranslation {
   strip_prefix: string;
   rules: PathReplace[];
-  keep_v1_prefix: boolean;
 }
 
 export interface ProviderConfig {
