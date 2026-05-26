@@ -319,8 +319,10 @@ pub fn clear_logs(state: State<AppState>) {
 pub async fn list_models(
     base_url: String,
     api_key: String,
+    v1_prefix: bool,
 ) -> Result<Vec<String>, String> {
-    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let models_path = if v1_prefix { "/v1/models" } else { "/models" };
+    let url = format!("{}{}", base_url.trim_end_matches('/'), models_path);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()

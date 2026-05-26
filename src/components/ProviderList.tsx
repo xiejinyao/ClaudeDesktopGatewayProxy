@@ -145,6 +145,7 @@ export default function ProviderList({
       const models: string[] = await invoke("list_models", {
         baseUrl: provider.base_url,
         apiKey: provider.api_key,
+        v1Prefix: provider.v1_prefix,
       });
       const updated = [...providers];
       const existingTargets = new Set(provider.model_mappings.map((m) => m.target_model));
