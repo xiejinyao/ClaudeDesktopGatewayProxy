@@ -27,6 +27,7 @@ http-body-util = "0.1"
 http-body = "1"
 bytes = "1"
 futures = "0.3"
+if-addrs = "0.12"
 rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
 rcgen = "0.13"
