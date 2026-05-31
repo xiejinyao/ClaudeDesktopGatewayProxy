@@ -29,6 +29,14 @@ export default function Header({ running, runningCount, enabledCount, onToggle }
           <h1 className="text-lg font-bold text-white tracking-wide">
             Claude Gateway Proxy
           </h1>
+          {import.meta.env.DEV && (
+            <span
+              title="开发模式 (vite dev)"
+              className="text-[10px] font-bold px-1.5 py-0.5 rounded border border-amber-500/60 bg-amber-500/15 text-amber-300 tracking-wider"
+            >
+              DEV
+            </span>
+          )}
           <span className="text-xs text-gray-500 hidden sm:inline">
             {enabledCount > 0
               ? `${enabledCount} 个分组已启用`
