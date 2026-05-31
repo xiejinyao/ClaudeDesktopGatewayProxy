@@ -24,6 +24,10 @@ pub struct ProxyServer {
     running: Arc<Mutex<bool>>,
     is_tls: bool,
     start_error: Arc<Mutex<Option<String>>>,
+    /// OS thread that owns the Tokio runtime + TcpListener.
+    /// Joined on `stop()` to guarantee the listening socket is released
+    /// before this struct is dropped or a new server tries to bind the same port.
+    thread_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl ProxyServer {
@@ -48,6 +52,9 @@ impl ProxyServer {
         let running_clone = running.clone();
         let start_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let start_error_clone = start_error.clone();
+        let bind_done: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)> =
+            Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let bind_done_clone = bind_done.clone();
 
         // Build TLS acceptor if enabled
         let tls_acceptor = if is_tls {
@@ -71,8 +78,18 @@ impl ProxyServer {
             log_level,
         ));
 
+        // Helper: signal the parent that bind() finished (either success or error).
+        let mark_bind_done = move |bd: &Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>| {
+            let (lock, cvar) = &**bd;
+            if let Ok(mut done) = lock.lock() {
+                *done = true;
+                cvar.notify_all();
+            }
+        };
+
         // Spawn on a dedicated OS thread with its own Tokio runtime.
-        std::thread::spawn(move || {
+        let bind_done_for_thread = bind_done_clone.clone();
+        let handle = std::thread::spawn(move || {
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -81,6 +98,8 @@ impl ProxyServer {
                 Err(e) => {
                     log::error!("[{}] 创建 Tokio runtime 失败: {}", group_name, e);
                     *running_clone.lock() = false;
+                    *start_error_clone.lock() = Some(format!("创建 Tokio runtime 失败: {}", e));
+                    mark_bind_done(&bind_done_for_thread);
                     return;
                 }
             };
@@ -93,6 +112,7 @@ impl ProxyServer {
                         log::error!("[{}] {}", group_name, msg);
                         *running_clone.lock() = false;
                         *start_error_clone.lock() = Some(msg);
+                        mark_bind_done(&bind_done_for_thread);
                         return;
                     }
                 };
@@ -100,11 +120,33 @@ impl ProxyServer {
                 let proto = if tls_acceptor.is_some() { "HTTPS" } else { "HTTP" };
                 log::info!("[{}] 代理服务启动于 {} ({})", group_name, addr, proto);
 
+                // Bind succeeded — release the parent thread now so it can record
+                // an accurate `is_running()` and proceed to the next group.
+                mark_bind_done(&bind_done_for_thread);
+
                 serve(listener, handler, shutdown_rx, group_name, tls_acceptor).await;
+                // listener is dropped here → OS releases the port before the runtime drops.
 
                 *running_clone.lock() = false;
             });
+            // rt dropped → all spawned connection tasks are cancelled.
         });
+
+        // Block here until the worker thread has either bound the listener
+        // or recorded a startup error. This makes ProxyServer::new() effectively
+        // synchronous w.r.t. "is the port now owned by us?" — which is what the
+        // rest of the codebase already assumes when calling is_running().
+        {
+            let (lock, cvar) = &*bind_done;
+            if let Ok(done) = lock.lock() {
+                // Cap the wait in case something goes very wrong, so we never hang the UI.
+                let timeout = std::time::Duration::from_secs(5);
+                let (guard, _) = cvar
+                    .wait_timeout_while(done, timeout, |d| !*d)
+                    .unwrap_or_else(|p| p.into_inner());
+                drop(guard);
+            }
+        }
 
         ProxyServer {
             addr,
@@ -112,6 +154,7 @@ impl ProxyServer {
             running,
             is_tls,
             start_error,
+            thread_handle: Mutex::new(Some(handle)),
         }
     }
 
@@ -135,12 +178,25 @@ impl ProxyServer {
         self.start_error.lock().clone()
     }
 
-    /// Stop the proxy server
+    /// Stop the proxy server.
+    ///
+    /// Blocks until the worker OS thread exits, which guarantees the Tokio
+    /// runtime is dropped and the listening socket is fully released.
+    /// This is the only way to safely rebind the same port immediately after.
     pub fn stop(&self) {
         if let Some(tx) = self.shutdown_tx.lock().take() {
             let _ = tx.send(());
         }
         *self.running.lock() = false;
+
+        // Join the worker thread so the listener socket is actually freed
+        // before this call returns. Without this, callers (like save_config
+        // → stop_all_proxies → start_proxies_for_all) would hit "port already
+        // in use" on the very next bind.
+        let handle_opt = { self.thread_handle.lock().take() };
+        if let Some(h) = handle_opt {
+            let _ = h.join();
+        }
     }
 }
 

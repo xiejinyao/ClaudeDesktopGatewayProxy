@@ -160,8 +160,40 @@ fn proxy_url_scheme(tls_enabled: bool) -> &'static str {
 #[tauri::command]
 pub fn get_proxy_status(state: State<AppState>) -> ProxyStatusResponse {
     let cfg = state.config.get();
-    let proxies = state.proxies.lock();
 
+    // Reconcile: any group whose `enabled` was flipped to false (e.g. via
+    // save_config) but whose proxy server is still sitting in the map must
+    // be stopped here — otherwise the UI shows "运行中 2/0" and the port
+    // stays bound.
+    {
+        let mut proxies = state.proxies.lock();
+        let stale_ids: Vec<String> = cfg
+            .groups
+            .iter()
+            .filter(|g| !g.enabled && proxies.contains_key(&g.id))
+            .map(|g| g.id.clone())
+            .collect();
+        for id in &stale_ids {
+            if let Some(srv) = proxies.remove(id) {
+                srv.stop(); // blocks until the listener socket is released
+                let group_name = cfg
+                    .groups
+                    .iter()
+                    .find(|g| &g.id == id)
+                    .map(|g| g.name.clone())
+                    .unwrap_or_else(|| id.clone());
+                drop(proxies); // release lock before logging (avoid nested lock)
+                add_log(
+                    &state.logs,
+                    &format!("🧹 [{}] 检测到已关闭但未释放，已清理", group_name),
+                );
+                proxies = state.proxies.lock();
+            }
+        }
+        let _ = proxies; // explicit drop site
+    }
+
+    let proxies = state.proxies.lock();
     let groups: Vec<GroupProxyInfo> = cfg
         .groups
         .iter()
