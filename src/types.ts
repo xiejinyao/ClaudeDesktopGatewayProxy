@@ -54,6 +54,13 @@ export interface GroupProxyInfo {
 export interface ProxyStatus {
   any_running: boolean;
   groups: GroupProxyInfo[];
+  failures?: StartupFailure[];
+}
+
+export interface StartupFailure {
+  group_id: string;
+  group_name: string;
+  reason: string;
 }
 
 export interface TestResult {

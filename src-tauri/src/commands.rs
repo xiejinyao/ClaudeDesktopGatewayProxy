@@ -1,5 +1,5 @@
 use crate::proxy::handler::ProxyHandler;
-use crate::{add_log, extract_port, start_proxies_for_all, stop_all_proxies, AppState};
+use crate::{add_log, extract_port, start_proxies_for_all, stop_all_proxies, AppState, StartupFailure};
 use serde::Serialize;
 use tauri::{Manager, State};
 
@@ -20,12 +20,18 @@ pub struct GroupProxyInfo {
 pub struct ProxyStatusResponse {
     pub any_running: bool,
     pub groups: Vec<GroupProxyInfo>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<StartupFailure>,
 }
 
 #[derive(Serialize)]
 pub struct ConfigResponse {
     pub groups: Vec<crate::config::GroupConfig>,
     pub active_group: String,
+    /// Startup failures recorded before the frontend loaded the config.
+    /// Drained once read so the same failures are not surfaced twice.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub startup_failures: Vec<StartupFailure>,
 }
 
 #[derive(Serialize)]
@@ -40,10 +46,19 @@ pub struct TestResponse {
 }
 
 #[derive(Serialize)]
+pub struct ToggleGroupResponse {
+    pub status: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<StartupFailure>,
+}
+
+#[derive(Serialize)]
 pub struct SaveConfigResponse {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<StartupFailure>,
 }
 
 // ==================== Commands ====================
@@ -51,9 +66,12 @@ pub struct SaveConfigResponse {
 #[tauri::command]
 pub fn get_config(state: State<AppState>) -> ConfigResponse {
     let cfg = state.config.get();
+    // Drain startup failures so the frontend only sees them once
+    let startup_failures: Vec<StartupFailure> = state.startup_failures.lock().drain(..).collect();
     ConfigResponse {
         groups: cfg.groups,
         active_group: cfg.active_group,
+        startup_failures,
     }
 }
 
@@ -62,6 +80,11 @@ pub fn save_config(
     state: State<AppState>,
     groups: Vec<crate::config::GroupConfig>,
     active_group: String,
+    // When true, persist the config but skip stopping/restarting proxies.
+    // Used internally when we re-save after auto-disabling failed groups
+    // (so we don't enter a stop/start loop).
+    // Frontend callers may omit this argument — tauri will treat it as None.
+    skip_restart: Option<bool>,
 ) -> SaveConfigResponse {
     // Validate model names across all groups
     for group in &groups {
@@ -74,6 +97,7 @@ pub fn save_config(
                             "模型名 {} 不合规，需以 claude- 或 anthropic/claude- 开头",
                             mapping.alias_model
                         )),
+                        failures: Vec::new(),
                     };
                 }
             }
@@ -90,6 +114,7 @@ pub fn save_config(
                     "端口冲突：\"{}\" 和 \"{}\" 都使用了 {}",
                     conflict_name, group.name, group.listen_addr
                 )),
+                failures: Vec::new(),
             };
         }
         seen_ports.insert(&group.listen_addr, &group.name);
@@ -132,22 +157,72 @@ pub fn save_config(
         active_group: active_group.clone(),
     };
 
-    match state.config.save(cfg.clone()) {
+    // skip_restart path: only persist, don't touch running proxies.
+    if skip_restart.unwrap_or(false) {
+        return match state.config.save(cfg) {
+            Ok(()) => SaveConfigResponse {
+                status: "ok".to_string(),
+                error: None,
+                failures: Vec::new(),
+            },
+            Err(e) => SaveConfigResponse {
+                status: "error".to_string(),
+                error: Some(e),
+                failures: Vec::new(),
+            },
+        };
+    }
+
+    // Keep a clone so we can re-persist with failed groups disabled if needed.
+    let cfg_for_fix = cfg.clone();
+
+    match state.config.save(cfg) {
         Ok(()) => {
-            // Stop all old proxies, then start fresh for every group with API keys
+            // Stop all old proxies, then start fresh for every enabled group
             stop_all_proxies(&state.proxies);
             let log_level = state.log_level.clone();
-            start_proxies_for_all(&state.proxies, &cfg, &state.logs, &log_level);
-            add_log(&state.logs, "🔄 配置已更新，所有分组代理已重启");
+            let failures = start_proxies_for_all(&state.proxies, &cfg_for_fix, &state.logs, &log_level);
+
+            if failures.is_empty() {
+                add_log(&state.logs, "🔄 配置已更新，所有分组代理已重启");
+            } else {
+                add_log(
+                    &state.logs,
+                    &format!(
+                        "⚠️ 配置已更新，但 {} 个分组启动失败，已自动禁用并保存",
+                        failures.len()
+                    ),
+                );
+
+                // Auto-disable failed groups and persist the fix so next
+                // save_config call won't try them again (breaks the restart loop).
+                // We save directly (not via save_config) to avoid restarting
+                // proxies a second time.
+                let fail_ids: std::collections::HashSet<&str> = failures
+                    .iter()
+                    .map(|f| f.group_id.as_str())
+                    .collect();
+                let mut fixed_cfg = cfg_for_fix;
+                for g in &mut fixed_cfg.groups {
+                    if fail_ids.contains(g.id.as_str()) {
+                        g.enabled = false;
+                    }
+                }
+                if let Err(e) = state.config.save(fixed_cfg) {
+                    log::error!("自动禁用失败分组时持久化失败: {}", e);
+                }
+            }
 
             SaveConfigResponse {
                 status: "ok".to_string(),
                 error: None,
+                failures,
             }
         }
         Err(e) => SaveConfigResponse {
             status: "error".to_string(),
             error: Some(e),
+            failures: Vec::new(),
         },
     }
 }
@@ -229,6 +304,7 @@ pub fn get_proxy_status(state: State<AppState>) -> ProxyStatusResponse {
     ProxyStatusResponse {
         any_running,
         groups,
+        failures: Vec::new(),
     }
 }
 
@@ -242,6 +318,7 @@ pub fn toggle_proxy(state: State<AppState>) -> ProxyStatusResponse {
         proxies.values().any(|s| s.is_running())
     };
 
+    let mut start_failures: Vec<StartupFailure> = Vec::new();
     if any_running {
         // Stop all
         stop_all_proxies(&state.proxies);
@@ -249,13 +326,22 @@ pub fn toggle_proxy(state: State<AppState>) -> ProxyStatusResponse {
     } else {
         // Start all eligible
         let log_level = state.log_level.clone();
-        start_proxies_for_all(&state.proxies, &cfg, &state.logs, &log_level);
-        add_log(&state.logs, "🚀 所有分组代理已启动");
+        start_failures = start_proxies_for_all(&state.proxies, &cfg, &state.logs, &log_level);
+        if start_failures.is_empty() {
+            add_log(&state.logs, "🚀 所有分组代理已启动");
+        } else {
+            add_log(
+                &state.logs,
+                &format!("⚠️ {} 个分组启动失败，已自动禁用", start_failures.len()),
+            );
+        }
     }
 
-    // Return updated status
+    // Return updated status, attaching any startup failures
     drop(cfg);
-    get_proxy_status_inner(&state)
+    let mut resp = get_proxy_status_inner(&state);
+    resp.failures = start_failures;
+    resp
 }
 
 fn get_proxy_status_inner(state: &State<AppState>) -> ProxyStatusResponse {
@@ -295,6 +381,7 @@ fn get_proxy_status_inner(state: &State<AppState>) -> ProxyStatusResponse {
     ProxyStatusResponse {
         any_running: groups.iter().any(|g| g.running),
         groups,
+        failures: Vec::new(),
     }
 }
 
@@ -437,7 +524,7 @@ pub fn show_window(app: tauri::AppHandle) {
 pub fn toggle_group_proxy(
     state: State<'_, AppState>,
     group_id: String,
-) -> Result<String, String> {
+) -> Result<ToggleGroupResponse, String> {
     let cfg = state.config.get();
     let group = cfg
         .groups
@@ -453,7 +540,10 @@ pub fn toggle_group_proxy(
             srv.stop();
             proxies.remove(&group_id);
             add_log(&state.logs, &format!("⏹️ [{}] 代理已停止", group.name));
-            return Ok("stopped".into());
+            return Ok(ToggleGroupResponse {
+                status: "stopped".into(),
+                failures: Vec::new(),
+            });
         }
     }
 
@@ -474,7 +564,16 @@ pub fn toggle_group_proxy(
     if !srv.is_running() {
         let err = srv.start_error().unwrap_or_else(|| "未知错误".to_string());
         add_log(&state.logs, &format!("❌ [{}] {}", group.name, err));
-        return Err(err);
+        // Return Ok with a failure record — the group is NOT in the map,
+        // so the caller can safely disable it in the config and persist.
+        return Ok(ToggleGroupResponse {
+            status: "failed".into(),
+            failures: vec![StartupFailure {
+                group_id: group.id.clone(),
+                group_name: group.name.clone(),
+                reason: err,
+            }],
+        });
     }
 
     proxies.insert(group_id.clone(), srv);
@@ -485,7 +584,10 @@ pub fn toggle_group_proxy(
         &format!("🔄 [{}] 端点: {}://localhost:{}/anthropic", group.name, scheme, extract_port(&addr)),
     );
 
-    Ok("started".into())
+    Ok(ToggleGroupResponse {
+        status: "started".into(),
+        failures: Vec::new(),
+    })
 }
 
 #[tauri::command]
@@ -527,8 +629,32 @@ pub fn import_config(
     state.config.save(cfg.clone()).map_err(|e| format!("保存配置失败: {}", e))?;
     stop_all_proxies(&state.proxies);
     let log_level = state.log_level.clone();
-    start_proxies_for_all(&state.proxies, &cfg, &state.logs, &log_level);
-    add_log(&state.logs, "📥 配置已导入并生效");
+    let failures = start_proxies_for_all(&state.proxies, &cfg, &state.logs, &log_level);
+    if failures.is_empty() {
+        add_log(&state.logs, "📥 配置已导入并生效");
+    } else {
+        add_log(
+            &state.logs,
+            &format!(
+                "📥 配置已导入，但 {} 个分组启动失败，已自动禁用并保存",
+                failures.len()
+            ),
+        );
+        // Auto-disable and persist so they won't retry on next save/launch
+        let fail_ids: std::collections::HashSet<&str> = failures
+            .iter()
+            .map(|f| f.group_id.as_str())
+            .collect();
+        let mut fixed_cfg = cfg;
+        for g in &mut fixed_cfg.groups {
+            if fail_ids.contains(g.id.as_str()) {
+                g.enabled = false;
+            }
+        }
+        let _ = state.config.save(fixed_cfg);
+        // Surface these failures so the frontend can auto-disable them too
+        *state.startup_failures.lock() = failures;
+    }
 
     Ok(path)
 }

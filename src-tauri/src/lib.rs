@@ -8,7 +8,17 @@ use proxy::ProxyServer;
 use std::collections::HashMap;
 use std::sync::Arc;
 use parking_lot::Mutex;
+use serde::Serialize;
 use tauri::Manager;
+
+/// Recorded failure from starting a proxy server (e.g. port in use, TLS error).
+/// Surfaced to the frontend so the corresponding group can be auto-disabled.
+#[derive(Clone, Debug, Serialize)]
+pub struct StartupFailure {
+    pub group_id: String,
+    pub group_name: String,
+    pub reason: String,
+}
 
 /// Shared application state
 pub struct AppState {
@@ -20,6 +30,9 @@ pub struct AppState {
     pub log_level: Arc<Mutex<String>>,
     /// Close behavior: "tray" (hide to tray) or "quit" (exit)
     pub close_behavior: Arc<Mutex<String>>,
+    /// Failures recorded during auto-start at launch.
+    /// Read (and drained) by the frontend to auto-disable broken groups.
+    pub startup_failures: Arc<Mutex<Vec<StartupFailure>>>,
 }
 
 impl AppState {
@@ -29,7 +42,8 @@ impl AppState {
         let logs = Arc::new(Mutex::new(Vec::new()));
         let log_level = Arc::new(Mutex::new("basic".to_string()));
         let close_behavior = Arc::new(Mutex::new("tray".to_string()));
-        Self { config, proxies, logs, log_level, close_behavior }
+        let startup_failures = Arc::new(Mutex::new(Vec::new()));
+        Self { config, proxies, logs, log_level, close_behavior, startup_failures }
     }
 }
 
@@ -54,7 +68,10 @@ pub fn run() {
             let state = app.state::<AppState>();
             let cfg = state.config.get();
             let log_lvl = state.log_level.clone();
-            start_proxies_for_all(&state.proxies, &cfg, &state.logs, &log_lvl);
+            let failures = start_proxies_for_all(&state.proxies, &cfg, &state.logs, &log_lvl);
+            if !failures.is_empty() {
+                *state.startup_failures.lock() = failures;
+            }
 
             tray::setup_tray(&handle)?;
             Ok(())
@@ -110,14 +127,18 @@ pub fn stop_all_proxies(proxies: &Arc<Mutex<HashMap<String, ProxyServer>>>) {
     }
 }
 
-/// Start proxies for every group that has API keys configured
+/// Start proxies for every group that has API keys configured.
+/// Returns a list of `StartupFailure` records for groups whose proxy could
+/// not start (e.g. port already bound). Callers persist this so the frontend
+/// can auto-disable those groups.
 pub fn start_proxies_for_all(
     proxies: &Arc<Mutex<HashMap<String, ProxyServer>>>,
     cfg: &AppConfig,
     logs: &Arc<Mutex<Vec<String>>>,
     log_level: &Arc<Mutex<String>>,
-) {
+) -> Vec<StartupFailure> {
     let mut proxies_lock = proxies.lock();
+    let mut failures: Vec<StartupFailure> = Vec::new();
 
     for group in &cfg.groups {
         // Only start proxies for manually enabled groups
@@ -147,6 +168,11 @@ pub fn start_proxies_for_all(
         if !srv.is_running() {
             let err = srv.start_error().unwrap_or_else(|| "未知错误".to_string());
             add_log(logs, &format!("❌ [{}] {}", group.name, err));
+            failures.push(StartupFailure {
+                group_id: group.id.clone(),
+                group_name: group.name.clone(),
+                reason: err,
+            });
             continue; // Don't add to map — won't try again until next start
         }
 
@@ -164,6 +190,8 @@ pub fn start_proxies_for_all(
             ),
         );
     }
+
+    failures
 }
 
 // ==================== Logging utilities ====================

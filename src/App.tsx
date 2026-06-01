@@ -7,6 +7,7 @@ import type {
   TestResult,
   LogsResult,
   ToastItem,
+  StartupFailure,
 } from "./types";
 import Header from "./components/Header";
 import BasicSettings from "./components/BasicSettings";
@@ -43,8 +44,41 @@ export default function App() {
 
   const loadConfig = async () => {
     try {
-      const cfg = await invoke<AppConfig>("get_config");
-      setConfig(cfg);
+      const cfg = await invoke<AppConfig & { startup_failures?: StartupFailure[] }>("get_config");
+      const { startup_failures, ...restCfg } = cfg;
+      console.log("[loadConfig] raw cfg:", cfg);
+      console.log("[loadConfig] startup_failures:", startup_failures);
+
+      // Handle startup failures: auto-disable those groups in a single setState
+      // (avoids the batched-prev pitfall of two sequential setConfig calls).
+      if (startup_failures && startup_failures.length > 0) {
+        const failIds = new Set(startup_failures.map((f) => f.group_id));
+        const fixedGroups = restCfg.groups.map((g) =>
+          failIds.has(g.id) ? { ...g, enabled: false } : g
+        );
+        // Single state update — no ambiguity about `prev`.
+        setConfig({ ...restCfg, groups: fixedGroups } as AppConfig);
+
+        for (const f of startup_failures) {
+          addToast(
+            `[${f.group_name}] 启动失败: ${f.reason}，已自动关闭`,
+            "error"
+          );
+        }
+
+        // Persist the disabled state so it won't try again next launch.
+        // Pass groups/activeGroup explicitly — don't depend on React state.
+        try {
+          await invoke("save_config", {
+            groups: fixedGroups,
+            activeGroup: restCfg.active_group,
+          });
+        } catch (err) {
+          console.error("[loadConfig] failed to persist disabled groups:", err);
+        }
+      } else {
+        setConfig(restCfg as AppConfig);
+      }
     } catch (e) {
       console.error("Failed to load config:", e);
     } finally {
@@ -170,11 +204,55 @@ export default function App() {
 
     // Fire backend toggle
     try {
-      await invoke("toggle_group_proxy", { groupId });
+      const res = await invoke<{ status: string; failures?: StartupFailure[] }>(
+        "toggle_group_proxy",
+        { groupId }
+      );
+      console.log("[handleToggleGroup] toggle response:", res);
+      console.log("[handleToggleGroup] res.failures:", res?.failures);
+
+      // Backend couldn't start the proxy (e.g. port in use) — auto-disable
+      if (res && Array.isArray(res.failures) && res.failures.length > 0) {
+        for (const f of res.failures) {
+          addToast(
+            `[${f.group_name}] 启动失败: ${f.reason}`,
+            "error"
+          );
+        }
+        // Switch was optimistically flipped on — flip it back off
+        setConfig((prev) => {
+          if (!prev) return prev;
+          const next = {
+            ...prev,
+            groups: prev.groups.map((g) =>
+              g.id === groupId ? { ...g, enabled: false } : g
+            ),
+          };
+          console.log("[handleToggleGroup] setConfig disabled:", next);
+          return next;
+        });
+        // Persist the disabled state
+        const updated = config
+          ? config.groups.map((g) =>
+              g.id === groupId ? { ...g, enabled: false } : g
+            )
+          : [];
+        try {
+          await invoke("save_config", {
+            groups: updated,
+            activeGroup: config?.active_group ?? "",
+          });
+          console.log("[handleToggleGroup] persisted enabled=false");
+        } catch (e) {
+          console.error("[handleToggleGroup] save failed:", e);
+        }
+      }
+
       await loadStatus();
       await loadLogs();
-    } catch {
-      // Revert on failure
+    } catch (err) {
+      // Revert on failure (e.g. "分组不存在")
+      console.error("[handleToggleGroup] invoke threw:", err);
       addToast("操作失败", "error");
       setConfig((prev) => {
         if (!prev) return prev;
@@ -216,10 +294,45 @@ export default function App() {
     try {
       const result = await invoke<ProxyStatus>("toggle_proxy");
       setStatus(result);
-      addToast(
-        result.any_running ? "代理已启动" : "代理已停止",
-        result.any_running ? "success" : "info"
-      );
+
+      // Any group that failed to start must be auto-disabled
+      if (result.failures && result.failures.length > 0) {
+        const failIds = new Set(result.failures.map((f) => f.group_id));
+        const fixedGroups = config
+          ? config.groups.map((g) =>
+              failIds.has(g.id) ? { ...g, enabled: false } : g
+            )
+          : [];
+        for (const f of result.failures) {
+          addToast(
+            `[${f.group_name}] 启动失败: ${f.reason}，已自动关闭`,
+            "error"
+          );
+        }
+        setConfig((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            groups: prev.groups.map((g) =>
+              failIds.has(g.id) ? { ...g, enabled: false } : g
+            ),
+          };
+        });
+        // Persist so they won't try again on next launch
+        try {
+          await invoke("save_config", {
+            groups: fixedGroups,
+            activeGroup: config?.active_group ?? "",
+          });
+        } catch {
+          // ignore save errors
+        }
+      } else {
+        addToast(
+          result.any_running ? "代理已启动" : "代理已停止",
+          result.any_running ? "success" : "info"
+        );
+      }
       await loadLogs();
     } catch (e: unknown) {
       addToast("操作失败: " + (e as Error).toString?.() || "未知错误", "error");
